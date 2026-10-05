@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Status dos Serviços</title>
+  <link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%2398a2b3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="container">
+    <header class="page-header">
+      <h1 id="title">Status dos Serviços</h1>
+      <p class="updated">Atualizado <span id="updated">—</span></p>
+    </header>
+
+    <section id="banner" class="banner banner--pending" aria-live="polite">
+      <span id="banner-icon" class="banner__icon" aria-hidden="true">…</span>
+      <div class="banner__text">
+        <strong id="banner-title">Carregando status…</strong>
+        <span id="banner-subtitle"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <ul id="services" class="services">
+        <li class="empty-state">Carregando serviços…</li>
+      </ul>
+    </section>
+
+    <footer class="page-footer">
+      <ul class="legend">
+        <li><span class="dot dot--operational"></span>Operacional</li>
+        <li><span class="dot dot--degraded"></span>Degradado</li>
+        <li><span class="dot dot--outage"></span>Fora de Serviço</li>
+        <li><span class="dot dot--empty"></span>Sem dados</li>
+      </ul>
+      <p>A página é atualizada automaticamente a cada 10 segundos.</p>
+    </footer>
+  </main>
+
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
