@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const FILE_PATTERN = /^status-(\d{4}-\d{2}-\d{2})\.txt$/;
+const LINE_PATTERN = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3}) \| (.*)$/;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 const pad = (n, size = 2) => String(n).padStart(size, '0');
@@ -42,6 +43,35 @@ class FileLogger {
       .then(() => fs.promises.appendFile(file, `${localTimestamp(date)} | ${line}\n`, 'utf8'))
       .catch((err) => console.error(`[logger] Falha ao gravar em ${file}: ${err.message}`));
     return this.queue;
+  }
+
+  /** Lê as linhas gravadas a partir de sinceMs, em ordem cronológica: [{ timestamp, text }]. */
+  async readSince(sinceMs) {
+    const firstDay = localDate(new Date(sinceMs));
+    const entries = [];
+
+    try {
+      const files = (await fs.promises.readdir(this.dir))
+        .filter((file) => {
+          const match = FILE_PATTERN.exec(file);
+          return match && match[1] >= firstDay;
+        })
+        .sort();
+
+      for (const file of files) {
+        const content = await fs.promises.readFile(path.join(this.dir, file), 'utf8');
+        for (const line of content.split('\n')) {
+          const m = LINE_PATTERN.exec(line);
+          if (!m) continue;
+          const timestamp = new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6], +m[7]).getTime();
+          if (timestamp >= sinceMs) entries.push({ timestamp, text: m[8] });
+        }
+      }
+    } catch (err) {
+      console.error(`[logger] Falha ao ler o histórico: ${err.message}`);
+    }
+
+    return entries.sort((a, b) => a.timestamp - b.timestamp);
   }
 
   /** Mantém o dia atual + (retentionDays - 1) dias anteriores. */

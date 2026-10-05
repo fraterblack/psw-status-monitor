@@ -3,6 +3,58 @@ const { STATUS, STATUS_LABEL } = require('./status');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const STATUS_BY_LOG_LABEL = Object.fromEntries(
+  Object.entries(STATUS_LABEL).map(([status, label]) => [label.toUpperCase(), status])
+);
+
+function isSlow(endpoint, responseTime) {
+  return endpoint.slowThresholdMs !== null && responseTime > endpoint.slowThresholdMs;
+}
+
+/** Texto explicativo exibido na página para resultados não operacionais. */
+function describeResult(endpoint, result) {
+  if (result.failed) {
+    return `falhou em ${result.failures.length} tentativa(s): ${result.failures.join('; ')}`;
+  }
+  const reasons = [];
+  if (result.attempts > 1) {
+    reasons.push(`respondeu após ${result.attempts} tentativas (${result.failures.join('; ')})`);
+  }
+  if (isSlow(endpoint, result.responseTime)) {
+    reasons.push(`resposta lenta: ${result.responseTime} ms (limite ${endpoint.slowThresholdMs} ms)`);
+  }
+  return reasons.join('; ') || null;
+}
+
+/**
+ * Interpreta o trecho de uma linha de log gerado por Monitor#formatLogLine (sem a data/hora).
+ * Devolve null se a linha não estiver no formato esperado.
+ */
+function parseLogLine(text) {
+  const [id, label, outcome, responseTime, attempts, , ...rest] = text.split(' | ');
+  const status = STATUS_BY_LOG_LABEL[label && label.trim()];
+  const rt = /^(\d+) ms$/.exec(responseTime || '');
+  const att = /^tentativas (\d+)\/(\d+)$/.exec(attempts || '');
+  if (!id || !status || !rt || !att) return null;
+
+  const failuresText = rest.join(' | ').replace(/^falhas: /, '');
+  const failures = failuresText ? failuresText.split('; ') : [];
+  const failed = failures.length >= Number(att[1]);
+  const http = /^HTTP (\d{3})$/.exec(outcome);
+
+  return {
+    id,
+    status,
+    failed,
+    statusCode: http ? Number(http[1]) : null,
+    responseTime: Number(rt[1]),
+    attempts: Number(att[1]),
+    maxAttempts: Number(att[2]),
+    failures,
+    error: failed ? outcome : null,
+  };
+}
+
 /**
  * Agenda e executa as verificações de um endpoint.
  *
@@ -33,6 +85,16 @@ class Monitor {
   stop() {
     this.stopped = true;
     clearTimeout(this.timer);
+  }
+
+  /** Recarrega resultados anteriores (lidos dos logs, em ordem cronológica) antes de iniciar. */
+  restore(results) {
+    if (!results.length) return;
+    for (const result of results) {
+      this.consecutiveFailures = result.failed ? this.consecutiveFailures + 1 : 0;
+    }
+    const last = results[results.length - 1];
+    this.store.restore(this.endpoint.id, results, { ...last, message: describeResult(this.endpoint, last) });
   }
 
   schedule(delayMs) {
@@ -73,51 +135,44 @@ class Monitor {
     const maxAttempts = ep.retries + 1;
     const failures = [];
     let last = null;
+    let attempt = 0;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    while (attempt < maxAttempts) {
+      attempt++;
       last = await httpCheck(ep);
       if (!last.error && !this.isExpectedStatus(last.statusCode)) {
         last.error = `HTTP ${last.statusCode}`;
       }
-
-      if (!last.error) {
-        this.consecutiveFailures = 0;
-        const slow = ep.slowThresholdMs !== null && last.responseTime > ep.slowThresholdMs;
-        const reasons = [];
-        if (attempt > 1) reasons.push(`respondeu após ${attempt} tentativas (${failures.join('; ')})`);
-        if (slow) reasons.push(`resposta lenta: ${last.responseTime} ms (limite ${ep.slowThresholdMs} ms)`);
-
-        return {
-          timestamp: Date.now(),
-          status: reasons.length ? STATUS.DEGRADED : STATUS.OPERATIONAL,
-          statusCode: last.statusCode,
-          responseTime: last.responseTime,
-          attempts: attempt,
-          maxAttempts,
-          failures,
-          error: null,
-          message: reasons.join('; ') || null,
-        };
-      }
+      if (!last.error) break;
 
       failures.push(last.error);
       if (attempt < maxAttempts && !this.stopped) await sleep(ep.retryDelay * 1000);
       if (this.stopped) break;
     }
 
-    this.consecutiveFailures++;
-    const outage = this.consecutiveFailures >= ep.failuresBeforeOutage;
-    return {
+    const failed = Boolean(last.error);
+    this.consecutiveFailures = failed ? this.consecutiveFailures + 1 : 0;
+
+    let status;
+    if (failed) {
+      status = this.consecutiveFailures >= ep.failuresBeforeOutage ? STATUS.OUTAGE : STATUS.DEGRADED;
+    } else {
+      status = attempt > 1 || isSlow(ep, last.responseTime) ? STATUS.DEGRADED : STATUS.OPERATIONAL;
+    }
+
+    const result = {
       timestamp: Date.now(),
-      status: outage ? STATUS.OUTAGE : STATUS.DEGRADED,
+      status,
+      failed,
       statusCode: last.statusCode ?? null,
       responseTime: last.responseTime,
-      attempts: failures.length,
+      attempts: attempt,
       maxAttempts,
       failures,
-      error: last.error,
-      message: `falhou em ${failures.length} tentativa(s): ${failures.join('; ')}`,
+      error: failed ? last.error : null,
     };
+    result.message = describeResult(ep, result);
+    return result;
   }
 
   formatLogLine(result) {
@@ -135,4 +190,4 @@ class Monitor {
   }
 }
 
-module.exports = { Monitor };
+module.exports = { Monitor, parseLogLine };

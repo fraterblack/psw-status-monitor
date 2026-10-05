@@ -1,0 +1,48 @@
+{
+  "title": "Status dos Serviços",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 4300
+  },
+  "logs": {
+    "dir": "./logs",
+    "retentionDays": 5
+  },
+  "maxStartDelay": 30,
+  "historyHours": 24,
+  "barsMinHours": 4,
+  "defaults": {
+    "method": "GET",
+    "timeout": 10,
+    "retries": 3,
+    "retryDelay": 5,
+    "failuresBeforeOutage": 1,
+    "slowThresholdMs": null,
+    "expectedStatus": null,
+    "headers": {}
+  },
+  "endpoints": [
+    {
+      "id": "google",
+      "name": "Google",
+      "url": "https://www.google.com",
+      "interval": 60
+    },
+    {
+      "id": "github-api",
+      "name": "GitHub API",
+      "url": "https://api.github.com",
+      "interval": 120,
+      "headers": { "User-Agent": "psw-status-monitor" }
+    },
+    {
+      "id": "httpbin",
+      "name": "HTTPBin",
+      "url": "https://httpbin.org/status/200",
+      "interval": 90,
+      "retries": 2,
+      "retryDelay": 3,
+      "slowThresholdMs": 1500
+    }
+  ]
+}

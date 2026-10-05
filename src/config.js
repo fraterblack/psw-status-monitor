@@ -118,6 +118,10 @@ function loadConfig(configPath = process.env.CONFIG_PATH || DEFAULT_CONFIG_PATH)
   const retentionDays = requireNonNegativeInt(logs.retentionDays ?? 5, 'logs.retentionDays');
   if (retentionDays < 1) fail('"logs.retentionDays" deve ser >= 1');
 
+  const historyHours = requirePositive(raw.historyHours ?? 24, 'historyHours');
+  const barsMinHours = requirePositive(raw.barsMinHours ?? 4, 'barsMinHours');
+  if (barsMinHours > historyHours) fail('"barsMinHours" não pode ser maior que "historyHours"');
+
   return {
     title: raw.title || 'Status dos Serviços',
     server: {
@@ -129,7 +133,8 @@ function loadConfig(configPath = process.env.CONFIG_PATH || DEFAULT_CONFIG_PATH)
       retentionDays,
     },
     maxStartDelay: requireNonNegativeInt(raw.maxStartDelay ?? 30, 'maxStartDelay'),
-    historyHours: requirePositive(raw.historyHours ?? 24, 'historyHours'),
+    historyHours,
+    barsMinHours,
     endpoints,
   };
 }

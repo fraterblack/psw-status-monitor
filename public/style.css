@@ -232,7 +232,8 @@ body {
   background: #1b2130;
   color: #fff;
   font-size: 12px;
-  white-space: nowrap;
+  line-height: 1.45;
+  white-space: pre;
   pointer-events: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }

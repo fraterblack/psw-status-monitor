@@ -8,6 +8,9 @@ Monitora uma lista de endpoints HTTP, grava os resultados em arquivos `.txt` di�
 ## Execução
 
 ```bash
+# configuração (o config.json não é versionado)
+cp config/config.json.example config/config.json
+
 # desenvolvimento
 npm start
 
@@ -37,6 +40,7 @@ Variáveis de ambiente opcionais:
   "logs": { "dir": "./logs", "retentionDays": 5 },
   "maxStartDelay": 30,
   "historyHours": 24,
+  "barsMinHours": 4,
   "defaults": { "timeout": 10, "retries": 3, "retryDelay": 5 },
   "endpoints": [
     {
@@ -58,7 +62,8 @@ Variáveis de ambiente opcionais:
 | `logs.dir`           | `./logs`                | Pasta dos logs (relativa à raiz do projeto).                                                                                                     |
 | `logs.retentionDays` | `5`                     | Dias de log mantidos (hoje + 4 anteriores). Arquivos mais antigos são apagados na inicialização e a cada hora.                                   |
 | `maxStartDelay`      | `30`                    | Cada endpoint faz a 1ª chamada após um atraso aleatório entre 0 e `min(interval, maxStartDelay)` segundos, para não chamar todos ao mesmo tempo. |
-| `historyHours`       | `24`                    | Janela (em memória) usada para uptime, média de resposta e barras da página.                                                                     |
+| `historyHours`       | `24`                    | Janela usada para uptime e média de resposta. Ao iniciar, é recarregada a partir dos arquivos de log.                                            |
+| `barsMinHours`       | `4`                     | Período mínimo coberto pelas barras de histórico da página (deve ser ≤ `historyHours`). Veja [Barras de histórico](#barras-de-histórico).        |
 | `defaults`           | —                       | Valores padrão aplicados a todos os endpoints (qualquer campo abaixo).                                                                           |
 
 ### Por endpoint
@@ -107,6 +112,18 @@ A saída do console (vista em `pm2 logs`) registra apenas a inicialização e as
 ## Página de status e API
 
 - `GET /` — página de status (atualiza a cada 10 s): banner geral, status de cada serviço, barras com as últimas verificações, uptime e tempo médio de resposta.
-- `GET /api/status` — os mesmos dados em JSON.
+- `GET /api/status?bars=60` — os mesmos dados em JSON; `bars` (10 a 120, padrão 60) define em quantas barras o histórico é agrupado.
 
-O histórico exibido fica em memória e é reiniciado quando o processo reinicia; o histórico permanente está nos arquivos de log.
+### Barras de histórico
+
+A página exibe 60 barras por serviço no desktop e 30 no celular. Cada barra agrupa checagens consecutivas, de forma que o conjunto cubra no mínimo `barsMinHours` (ou 1 checagem por barra, se isso já cobrir o período):
+
+| `interval` | Desktop (60 barras)          | Celular (30 barras)          |
+| ---------- | ---------------------------- | ---------------------------- |
+| 60 s       | 4 checagens/barra → 4 h      | 8 checagens/barra → 4 h      |
+| 120 s      | 2 checagens/barra → 4 h      | 4 checagens/barra → 4 h      |
+| 300 s      | 1 checagem/barra → 5 h       | 2 checagens/barra → 5 h      |
+
+A cor da barra é o **pior** status do grupo (uma falha isolada não é escondida). O tooltip mostra o período, a quantidade de checagens, o detalhamento por status e a resposta média. Abaixo das barras, "1 barra = N min" indica quanto tempo cada barra representa.
+
+O histórico exibido fica em memória e, ao iniciar, é reconstruído a partir dos arquivos de log das últimas `historyHours` horas (limitado à retenção dos logs). Assim, reiniciar o processo não zera as barras, o uptime nem o último status. O histórico é associado pelo `id` do endpoint: se o `id` mudar, o histórico anterior deixa de aparecer; linhas de endpoints removidos da configuração são ignoradas. O formato das linhas de log é usado nessa leitura, então mantenha-o se for alterá-lo (`formatLogLine` / `parseLogLine` em `src/monitor.js`).

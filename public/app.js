@@ -28,7 +28,11 @@
 
   var narrowScreen = window.matchMedia('(max-width: 640px)');
   var lastData = null;
+  var refreshTimer = null;
   var clockOffset = 0; // diferença entre o relógio do servidor e o do navegador
+
+  // Quantidade de barras por serviço; o servidor agrupa as checagens para caber nelas.
+  function barSlots() { return narrowScreen.matches ? 30 : 60; }
 
   function $(id) { return document.getElementById(id); }
 
@@ -46,9 +50,9 @@
     if (s < 60) return 'há ' + s + ' s';
     var m = Math.floor(s / 60);
     if (m < 60) return 'há ' + m + ' min';
-    var h = Math.floor(m / 60);
+    var h = Math.round(m / 60);
     if (h < 24) return 'há ' + h + ' h';
-    return 'há ' + Math.floor(h / 24) + ' d';
+    return 'há ' + Math.round(h / 24) + ' d';
   }
 
   function fmtMs(ms) { return ms == null ? '—' : ms.toLocaleString('pt-BR') + ' ms'; }
@@ -64,33 +68,60 @@
     });
   }
 
+  function fmtTime(ts) {
+    return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds < 60) return seconds + ' s';
+    if (seconds < 3600) return (seconds / 60).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' min';
+    return (seconds / 3600).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' h';
+  }
+
   function since(ts) {
     return '<span data-since="' + ts + '">' + relative(ts) + '</span>';
   }
 
-  function renderBars(history) {
-    var slots = narrowScreen.matches ? 30 : 60;
-    var items = history.slice(-slots);
-    var html = '';
-    for (var i = items.length; i < slots; i++) {
-      html += '<span class="bar bar--empty" data-tip="Sem dados"></span>';
+  function barTooltip(bar) {
+    if (bar.checks === 1) {
+      return fmtDateTime(bar.from) + '\n' + LABELS[bar.status] +
+        (bar.status === 'outage' ? '' : ' · ' + fmtMs(bar.avgResponseTime));
     }
-    items.forEach(function (h) {
-      var tip = fmtDateTime(h.t) + ' · ' + LABELS[h.s] + (h.s === 'outage' ? '' : ' · ' + fmtMs(h.rt));
-      html += '<span class="bar bar--' + h.s + '" data-tip="' + esc(tip) + '"></span>';
-    });
-    return { html: html, oldest: items.length ? items[0].t : null };
+    var lines = [
+      fmtDateTime(bar.from) + ' – ' + fmtTime(bar.to),
+      LABELS[bar.status] + ' · ' + bar.checks + ' verificações',
+    ];
+    var breakdown = ['operational', 'degraded', 'outage']
+      .filter(function (s) { return bar.counts[s] > 0; })
+      .map(function (s) { return bar.counts[s] + ' ' + LABELS[s].toLowerCase(); });
+    if (breakdown.length > 1) lines.push(breakdown.join(' · '));
+    if (bar.avgResponseTime != null) lines.push('Resposta média ' + fmtMs(bar.avgResponseTime));
+    return lines.join('\n');
   }
 
-  function renderService(svc, historyHours) {
-    var bars = renderBars(svc.history);
+  function renderBars(bars, slots) {
+    var html = '';
+    for (var i = bars.length; i < slots; i++) {
+      html += '<span class="bar bar--empty" data-tip="Sem dados"></span>';
+    }
+    bars.forEach(function (bar) {
+      html += '<span class="bar bar--' + bar.status + '" data-tip="' + esc(barTooltip(bar)) + '"></span>';
+    });
+    return html;
+  }
+
+  function renderService(svc, data) {
+    var historyHours = data.historyHours;
+    var oldest = svc.bars.length ? svc.bars[0].from : null;
     var showMessage = svc.message && svc.status !== 'operational';
+    var frequency = 'A cada ' + svc.interval + ' s' +
+      (svc.checksPerBar > 1 ? ' · 1 barra = ' + fmtDuration(svc.checksPerBar * svc.interval) : '');
 
     var meta = svc.lastCheck
       ? '<span>Última resposta <b>' + fmtMs(svc.responseTime) + '</b></span>' +
         '<span>Média ' + historyHours + 'h <b>' + fmtMs(svc.avgResponseTime) + '</b></span>' +
         '<span>Verificado ' + since(svc.lastCheck) + '</span>' +
-        '<span>A cada ' + svc.interval + ' s</span>'
+        '<span>' + frequency + '</span>'
       : '<span>Aguardando a primeira verificação (a cada ' + svc.interval + ' s)</span>';
 
     return (
@@ -99,9 +130,9 @@
           '<span class="service__name">' + esc(svc.name) + '</span>' +
           '<span class="pill pill--' + svc.status + '"><span class="dot"></span>' + LABELS[svc.status] + '</span>' +
         '</div>' +
-        '<div class="bars">' + bars.html + '</div>' +
+        '<div class="bars">' + renderBars(svc.bars, data.barSlots) + '</div>' +
         '<div class="bars__axis">' +
-          '<span>' + (bars.oldest ? since(bars.oldest) : '') + '</span>' +
+          '<span>' + (oldest ? since(oldest) : '') + '</span>' +
           '<span class="axis-line"></span>' +
           '<span class="uptime">' + fmtPct(svc.uptime) + ' uptime (' + historyHours + 'h)</span>' +
           '<span class="axis-line"></span>' +
@@ -150,12 +181,13 @@
     setBanner(data.overall, esc(bannerSubtitle(data.services)));
 
     $('services').innerHTML = data.services.length
-      ? data.services.map(function (svc) { return renderService(svc, data.historyHours); }).join('')
+      ? data.services.map(function (svc) { return renderService(svc, data); }).join('')
       : '<li class="empty-state">Nenhum serviço configurado.</li>';
   }
 
   function refresh() {
-    fetch('api/status', { cache: 'no-store' })
+    clearTimeout(refreshTimer);
+    fetch('api/status?bars=' + barSlots(), { cache: 'no-store' })
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
@@ -171,7 +203,10 @@
         if (lastData) subtitle += ' · exibindo dados de ' + since(lastData.generatedAt);
         setBanner('error', subtitle);
       })
-      .then(function () { setTimeout(refresh, REFRESH_MS); });
+      .then(function () {
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(refresh, REFRESH_MS);
+      });
   }
 
   // Atualiza os tempos relativos ("há 12 s") a cada segundo.
@@ -181,8 +216,8 @@
     });
   }, 1000);
 
-  // Re-renderiza ao mudar a largura da tela (quantidade de barras).
-  narrowScreen.addEventListener('change', function () { if (lastData) render(lastData); });
+  // A quantidade de barras depende da largura da tela: busca de novo ao mudar.
+  narrowScreen.addEventListener('change', refresh);
 
   // Tooltip das barras
   var tooltip = $('tooltip');
