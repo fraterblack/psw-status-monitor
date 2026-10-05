@@ -9,9 +9,13 @@ const ENDPOINT_DEFAULTS = {
   timeout: 10, // segundos
   retries: 3, // novas tentativas após a primeira falha
   retryDelay: 5, // segundos entre tentativas
-  failuresBeforeOutage: 1, // ciclos consecutivos com todas as tentativas falhando até virar "Fora de Serviço"
-  slowThresholdMs: null, // acima disso a resposta é considerada lenta (Degradado)
+  statusWindow: 5, // quantidade de checagens recentes usadas para calcular o status
+  degradedFailures: 2, // falhas na janela para "Degradado"
+  outageFailures: 3, // falhas na janela para "Fora de Serviço"
+  slowThresholdMs: null, // mediana de resposta acima disso = "Degradado"
+  severeMultiplier: 2, // mediana acima de slowThresholdMs × severeMultiplier = "Degradado grave"
   expectedStatus: null, // null = qualquer 2xx/3xx
+  ignoreStatus: [429], // respostas que descartam o ciclo (ex.: rate limit); [] desativa
   headers: {},
 };
 
@@ -42,11 +46,22 @@ function slugify(text) {
     .replace(/^-+|-+$/g, '');
 }
 
+const isHttpCode = (code) => Number.isInteger(code) && code >= 100 && code <= 599;
+
 function normalizeExpectedStatus(value, field) {
   if (value === null || value === undefined) return null;
   const list = Array.isArray(value) ? value : [value];
-  if (list.length === 0 || !list.every((code) => Number.isInteger(code) && code >= 100 && code <= 599)) {
+  if (list.length === 0 || !list.every(isHttpCode)) {
     fail(`"${field}" deve ser um código HTTP ou uma lista de códigos (ex.: [200, 204])`);
+  }
+  return list;
+}
+
+function normalizeIgnoreStatus(value, field) {
+  if (value === null || value === undefined) return [];
+  const list = Array.isArray(value) ? value : [value];
+  if (!list.every(isHttpCode)) {
+    fail(`"${field}" deve ser uma lista de códigos HTTP (ex.: [429]) ou [] para desativar`);
   }
   return list;
 }
@@ -70,8 +85,18 @@ function normalizeEndpoint(raw, index, defaults) {
   const id = ep.id ? String(ep.id) : slugify(name);
   if (!id) fail(`${where}: não foi possível gerar um "id"; informe-o explicitamente`);
 
-  const failuresBeforeOutage = requireNonNegativeInt(ep.failuresBeforeOutage, `${where}.failuresBeforeOutage`);
-  if (failuresBeforeOutage < 1) fail(`"${where}.failuresBeforeOutage" deve ser >= 1`);
+  const statusWindow = requireNonNegativeInt(ep.statusWindow, `${where}.statusWindow`);
+  const degradedFailures = requireNonNegativeInt(ep.degradedFailures, `${where}.degradedFailures`);
+  const outageFailures = requireNonNegativeInt(ep.outageFailures, `${where}.outageFailures`);
+  if (degradedFailures < 1 || degradedFailures > outageFailures || outageFailures > statusWindow) {
+    fail(
+      `${where}: é preciso 1 <= degradedFailures <= outageFailures <= statusWindow ` +
+        `(recebido: ${degradedFailures}, ${outageFailures}, ${statusWindow})`
+    );
+  }
+
+  const severeMultiplier = requirePositive(ep.severeMultiplier, `${where}.severeMultiplier`);
+  if (severeMultiplier <= 1) fail(`"${where}.severeMultiplier" deve ser maior que 1`);
 
   return {
     id,
@@ -83,12 +108,16 @@ function normalizeEndpoint(raw, index, defaults) {
     timeout: requirePositive(ep.timeout, `${where}.timeout`),
     retries: requireNonNegativeInt(ep.retries, `${where}.retries`),
     retryDelay: ep.retryDelay === 0 ? 0 : requirePositive(ep.retryDelay, `${where}.retryDelay`),
-    failuresBeforeOutage,
+    statusWindow,
+    degradedFailures,
+    outageFailures,
     slowThresholdMs:
       ep.slowThresholdMs === null || ep.slowThresholdMs === undefined
         ? null
         : requirePositive(ep.slowThresholdMs, `${where}.slowThresholdMs`),
+    severeMultiplier,
     expectedStatus: normalizeExpectedStatus(ep.expectedStatus, `${where}.expectedStatus`),
+    ignoreStatus: normalizeIgnoreStatus(ep.ignoreStatus, `${where}.ignoreStatus`),
   };
 }
 

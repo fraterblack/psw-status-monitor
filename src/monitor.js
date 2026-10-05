@@ -1,34 +1,58 @@
 const { httpCheck } = require('./checker');
-const { STATUS, STATUS_LABEL } = require('./status');
+const { STATUS, STATUS_LABEL, worstStatus } = require('./status');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const STATUS_BY_LOG_LABEL = Object.fromEntries(
   Object.entries(STATUS_LABEL).map(([status, label]) => [label.toUpperCase(), status])
 );
+const IGNORED_LOG_LABEL = 'IGNORADO';
 
-function isSlow(endpoint, responseTime) {
-  return endpoint.slowThresholdMs !== null && responseTime > endpoint.slowThresholdMs;
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 }
 
-/** Texto explicativo exibido na página para resultados não operacionais. */
-function describeResult(endpoint, result) {
-  if (result.failed) {
-    return `falhou em ${result.failures.length} tentativa(s): ${result.failures.join('; ')}`;
-  }
+/**
+ * Status do serviço a partir das últimas checagens (janela de `statusWindow`). Vale o pior entre:
+ *  - disponibilidade: falhas na janela >= outageFailures → Fora de Serviço; >= degradedFailures → Degradado
+ *  - latência: mediana das checagens com sucesso > slowThresholdMs × severeMultiplier → Degradado grave;
+ *              > slowThresholdMs → Degradado
+ * Uma falha isolada (abaixo de degradedFailures) ou um pico de latência isolado não alteram o status.
+ */
+function evaluateWindow(endpoint, window) {
+  const failed = window.filter((c) => c.failed);
+  const succeeded = window.filter((c) => !c.failed);
   const reasons = [];
-  if (result.attempts > 1) {
-    reasons.push(`respondeu após ${result.attempts} tentativas (${result.failures.join('; ')})`);
+  let status = STATUS.OPERATIONAL;
+
+  if (failed.length >= endpoint.degradedFailures) {
+    status = failed.length >= endpoint.outageFailures ? STATUS.OUTAGE : STATUS.DEGRADED;
+    reasons.push(
+      `${failed.length} falha${failed.length > 1 ? 's' : ''} nas últimas ${window.length} verificações ` +
+        `(última: ${failed[failed.length - 1].error})`
+    );
   }
-  if (isSlow(endpoint, result.responseTime)) {
-    reasons.push(`resposta lenta: ${result.responseTime} ms (limite ${endpoint.slowThresholdMs} ms)`);
+
+  if (endpoint.slowThresholdMs !== null && succeeded.length) {
+    const typical = median(succeeded.map((c) => c.responseTime));
+    const severeLimit = endpoint.slowThresholdMs * endpoint.severeMultiplier;
+    if (typical > severeLimit) {
+      status = worstStatus(status, STATUS.SEVERE);
+      reasons.push(`tempo de resposta mediano de ${typical} ms (acima de ${severeLimit} ms)`);
+    } else if (typical > endpoint.slowThresholdMs) {
+      status = worstStatus(status, STATUS.DEGRADED);
+      reasons.push(`tempo de resposta mediano de ${typical} ms (limite ${endpoint.slowThresholdMs} ms)`);
+    }
   }
-  return reasons.join('; ') || null;
+
+  return { status, message: reasons.join('; ') || null };
 }
 
 /**
  * Interpreta o trecho de uma linha de log gerado por Monitor#formatLogLine (sem a data/hora).
- * Devolve null se a linha não estiver no formato esperado.
+ * Devolve null se a linha não estiver no formato esperado ou for de um ciclo IGNORADO.
  */
 function parseLogLine(text) {
   const [id, label, outcome, responseTime, attempts, , ...rest] = text.split(' | ');
@@ -57,12 +81,8 @@ function parseLogLine(text) {
 
 /**
  * Agenda e executa as verificações de um endpoint.
- *
- * Regras de status de cada ciclo:
- *  - Operacional:     respondeu com sucesso na 1ª tentativa (e dentro de slowThresholdMs, se configurado)
- *  - Degradado:       só respondeu após novas tentativas, ou respondeu acima de slowThresholdMs,
- *                     ou falhou em todas as tentativas mas ainda não atingiu failuresBeforeOutage
- *  - Fora de Serviço: falhou em todas as tentativas por failuresBeforeOutage ciclos consecutivos
+ * Cada ciclo gera uma checagem (OK se alguma tentativa teve sucesso, falha se todas falharam);
+ * o status do serviço é calculado sobre a janela das últimas checagens (ver evaluateWindow).
  */
 class Monitor {
   constructor(endpoint, { store, logger, maxStartDelay }) {
@@ -70,7 +90,7 @@ class Monitor {
     this.store = store;
     this.logger = logger;
     this.maxStartDelay = maxStartDelay;
-    this.consecutiveFailures = 0;
+    this.recent = []; // janela de checagens usada no cálculo do status
     this.timer = null;
     this.stopped = false;
   }
@@ -87,14 +107,21 @@ class Monitor {
     clearTimeout(this.timer);
   }
 
-  /** Recarrega resultados anteriores (lidos dos logs, em ordem cronológica) antes de iniciar. */
-  restore(results) {
-    if (!results.length) return;
-    for (const result of results) {
-      this.consecutiveFailures = result.failed ? this.consecutiveFailures + 1 : 0;
-    }
-    const last = results[results.length - 1];
-    this.store.restore(this.endpoint.id, results, { ...last, message: describeResult(this.endpoint, last) });
+  /**
+   * Recarrega checagens anteriores (lidas dos logs, em ordem cronológica) antes de iniciar.
+   * Os status são recalculados com as regras e a configuração atuais.
+   */
+  restore(checks) {
+    if (!checks.length) return;
+    const results = checks.map((check) => this.evaluate(check));
+    this.store.restore(this.endpoint.id, results, results[results.length - 1]);
+  }
+
+  /** Inclui a checagem na janela e devolve o resultado com o status do serviço. */
+  evaluate(check) {
+    this.recent.push(check);
+    if (this.recent.length > this.endpoint.statusWindow) this.recent.shift();
+    return { ...check, ...evaluateWindow(this.endpoint, this.recent) };
   }
 
   schedule(delayMs) {
@@ -105,18 +132,9 @@ class Monitor {
   async run() {
     const startedAt = Date.now();
     try {
-      const result = await this.check();
+      const check = await this.check();
       if (this.stopped) return;
-
-      const previous = this.store.record(this.endpoint.id, result);
-      this.logger.write(new Date(result.timestamp), this.formatLogLine(result));
-
-      if (previous !== result.status) {
-        console.log(
-          `[monitor] ${this.endpoint.id}: ${STATUS_LABEL[previous]} -> ${STATUS_LABEL[result.status]}` +
-            (result.message ? ` (${result.message})` : '')
-        );
-      }
+      this.handle(check);
     } catch (err) {
       console.error(`[monitor] Erro inesperado ao verificar ${this.endpoint.id}:`, err);
     }
@@ -125,11 +143,31 @@ class Monitor {
     this.schedule(Math.max(0, this.endpoint.interval * 1000 - (Date.now() - startedAt)));
   }
 
+  handle(check) {
+    if (check.ignored) {
+      // Fica só no log, para acompanhar a frequência; status, histórico e uptime não mudam.
+      this.logger.write(new Date(check.timestamp), this.formatLogLine(check));
+      return;
+    }
+
+    const result = this.evaluate(check);
+    const previous = this.store.record(this.endpoint.id, result);
+    this.logger.write(new Date(result.timestamp), this.formatLogLine(result));
+
+    if (previous !== result.status) {
+      console.log(
+        `[monitor] ${this.endpoint.id}: ${STATUS_LABEL[previous]} -> ${STATUS_LABEL[result.status]}` +
+          (result.message ? ` (${result.message})` : '')
+      );
+    }
+  }
+
   isExpectedStatus(code) {
     const expected = this.endpoint.expectedStatus;
     return expected ? expected.includes(code) : code >= 200 && code < 400;
   }
 
+  /** Executa um ciclo com retries. Sucesso em qualquer tentativa conta como checagem OK. */
   async check() {
     const ep = this.endpoint;
     const maxAttempts = ep.retries + 1;
@@ -140,6 +178,19 @@ class Monitor {
     while (attempt < maxAttempts) {
       attempt++;
       last = await httpCheck(ep);
+      if (!last.error && ep.ignoreStatus.includes(last.statusCode)) {
+        // Ex.: 429 (rate limit) não diz nada sobre a saúde do serviço: descarta o ciclo,
+        // sem novas tentativas (repetir só agravaria o limite).
+        return {
+          timestamp: Date.now(),
+          ignored: true,
+          statusCode: last.statusCode,
+          responseTime: last.responseTime,
+          attempts: attempt,
+          maxAttempts,
+          failures,
+        };
+      }
       if (!last.error && !this.isExpectedStatus(last.statusCode)) {
         last.error = `HTTP ${last.statusCode}`;
       }
@@ -151,18 +202,8 @@ class Monitor {
     }
 
     const failed = Boolean(last.error);
-    this.consecutiveFailures = failed ? this.consecutiveFailures + 1 : 0;
-
-    let status;
-    if (failed) {
-      status = this.consecutiveFailures >= ep.failuresBeforeOutage ? STATUS.OUTAGE : STATUS.DEGRADED;
-    } else {
-      status = attempt > 1 || isSlow(ep, last.responseTime) ? STATUS.DEGRADED : STATUS.OPERATIONAL;
-    }
-
-    const result = {
+    return {
       timestamp: Date.now(),
-      status,
       failed,
       statusCode: last.statusCode ?? null,
       responseTime: last.responseTime,
@@ -171,15 +212,18 @@ class Monitor {
       failures,
       error: failed ? last.error : null,
     };
-    result.message = describeResult(ep, result);
-    return result;
   }
 
+  /**
+   * O status gravado é o do serviço; o resultado bruto da checagem fica em resultado/tentativas/falhas.
+   * Ciclos descartados (ignoreStatus) são gravados como IGNORADO e não são relidos na inicialização.
+   */
   formatLogLine(result) {
     const outcome = result.error || `HTTP ${result.statusCode}`;
+    const label = result.ignored ? IGNORED_LOG_LABEL : STATUS_LABEL[result.status].toUpperCase();
     const parts = [
       this.endpoint.id,
-      STATUS_LABEL[result.status].toUpperCase().padEnd(15),
+      label.padEnd(15),
       outcome,
       `${result.responseTime} ms`,
       `tentativas ${result.attempts}/${result.maxAttempts}`,

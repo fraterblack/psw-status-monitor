@@ -1,6 +1,4 @@
-const { STATUS } = require('./status');
-
-const SEVERITY = { [STATUS.OPERATIONAL]: 0, [STATUS.DEGRADED]: 1, [STATUS.OUTAGE]: 2 };
+const { STATUS, worstStatus } = require('./status');
 
 /** Estado em memória: último resultado e histórico recente de cada endpoint. */
 class StatusStore {
@@ -36,7 +34,7 @@ class StatusStore {
   /** @param {number} barSlots quantidade de barras que a página vai exibir por serviço */
   snapshot(barSlots) {
     const services = [...this.services.values()].map(({ endpoint, current, history }) => {
-      const up = history.filter((h) => h.s !== STATUS.OUTAGE);
+      const succeeded = history.filter((h) => !h.f);
       const { checksPerBar, bars } = buildBars(history, endpoint.interval, barSlots, this.barsMinSeconds);
       return {
         id: endpoint.id,
@@ -49,7 +47,8 @@ class StatusStore {
         attempts: current ? current.attempts : null,
         maxAttempts: endpoint.retries + 1,
         message: current ? current.message : null,
-        uptime: history.length ? (up.length / history.length) * 100 : null,
+        // Uptime e média usam as checagens reais (uma falha isolada reduz o uptime, mas não colore as barras).
+        uptime: history.length ? (succeeded.length / history.length) * 100 : null,
         avgResponseTime: averageResponseTime(history),
         checksPerBar,
         bars,
@@ -60,7 +59,7 @@ class StatusStore {
       generatedAt: Date.now(),
       historyHours: this.historyHours,
       barSlots,
-      overall: overallStatus(services.map((s) => s.status)),
+      overall: services.map((s) => s.status).reduce(worstStatus, STATUS.PENDING),
       services,
     };
   }
@@ -83,12 +82,13 @@ function buildBars(history, interval, slots, minSeconds) {
   return { checksPerBar, bars };
 }
 
+/** A barra assume o pior status do serviço no período (status já suavizado pela janela). */
 function summarizeBar(entries) {
-  const counts = { [STATUS.OPERATIONAL]: 0, [STATUS.DEGRADED]: 0, [STATUS.OUTAGE]: 0 };
+  const counts = { [STATUS.OPERATIONAL]: 0, [STATUS.DEGRADED]: 0, [STATUS.SEVERE]: 0, [STATUS.OUTAGE]: 0 };
   let worst = STATUS.OPERATIONAL;
   for (const h of entries) {
     counts[h.s]++;
-    if (SEVERITY[h.s] > SEVERITY[worst]) worst = h.s;
+    worst = worstStatus(worst, h.s);
   }
   return {
     from: entries[0].t,
@@ -100,21 +100,15 @@ function summarizeBar(entries) {
   };
 }
 
-/** Média das respostas que não foram "Fora de Serviço" (timeouts distorceriam a média). */
+/** Média das checagens com sucesso (timeouts e erros distorceriam a média). */
 function averageResponseTime(entries) {
-  const up = entries.filter((h) => h.s !== STATUS.OUTAGE);
-  return up.length ? Math.round(up.reduce((sum, h) => sum + h.rt, 0) / up.length) : null;
+  const succeeded = entries.filter((h) => !h.f);
+  return succeeded.length ? Math.round(succeeded.reduce((sum, h) => sum + h.rt, 0) / succeeded.length) : null;
 }
 
+/** s = status do serviço após a checagem; f = a checagem em si falhou. */
 function toHistoryEntry(result) {
-  return { t: result.timestamp, s: result.status, rt: result.responseTime };
-}
-
-function overallStatus(statuses) {
-  if (statuses.includes(STATUS.OUTAGE)) return STATUS.OUTAGE;
-  if (statuses.includes(STATUS.DEGRADED)) return STATUS.DEGRADED;
-  if (statuses.includes(STATUS.OPERATIONAL)) return STATUS.OPERATIONAL;
-  return STATUS.PENDING;
+  return { t: result.timestamp, s: result.status, rt: result.responseTime, f: result.failed };
 }
 
 module.exports = { StatusStore };

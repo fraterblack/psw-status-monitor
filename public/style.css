@@ -11,6 +11,9 @@
   --degraded: #e09100;
   --degraded-soft: #fdf3dc;
   --degraded-text: #a15c00;
+  --severe: #ea580c;
+  --severe-soft: #ffedd5;
+  --severe-text: #c2410c;
   --outage: #dc2626;
   --outage-soft: #fde8e8;
   --outage-text: #b91c1c;
@@ -33,9 +36,12 @@
     --operational: #22c55e;
     --operational-soft: rgba(34, 197, 94, 0.13);
     --operational-text: #4ade80;
-    --degraded: #f59e0b;
-    --degraded-soft: rgba(245, 158, 11, 0.13);
-    --degraded-text: #fbbf24;
+    --degraded: #eab308;
+    --degraded-soft: rgba(234, 179, 8, 0.13);
+    --degraded-text: #facc15;
+    --severe: #f97316;
+    --severe-soft: rgba(249, 115, 22, 0.14);
+    --severe-text: #fb923c;
     --outage: #ef4444;
     --outage-soft: rgba(239, 68, 68, 0.14);
     --outage-text: #f87171;
@@ -110,6 +116,9 @@ body {
 .banner--degraded, .pill--degraded, .bar--degraded, .dot--degraded {
   --status: var(--degraded); --status-soft: var(--degraded-soft); --status-text: var(--degraded-text);
 }
+.banner--severe, .pill--severe, .bar--severe, .dot--severe {
+  --status: var(--severe); --status-soft: var(--severe-soft); --status-text: var(--severe-text);
+}
 .banner--outage, .pill--outage, .bar--outage, .dot--outage {
   --status: var(--outage); --status-soft: var(--outage-soft); --status-text: var(--outage-text);
 }
@@ -163,13 +172,13 @@ body {
 /* Barras de histórico */
 .bars {
   display: flex;
-  gap: 2px;
+  gap: 1px;
   height: 34px;
 }
 .bar {
   flex: 1 1 0;
   min-width: 2px;
-  border-radius: 2px;
+  border-radius: 1px;
   background: var(--status);
   transition: opacity 0.15s;
 }

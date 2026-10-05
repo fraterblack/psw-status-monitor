@@ -6,6 +6,7 @@
   var LABELS = {
     operational: 'Operacional',
     degraded: 'Degradado',
+    severe: 'Degradado grave',
     outage: 'Fora de Serviço',
     pending: 'Aguardando',
   };
@@ -13,6 +14,7 @@
   var BANNERS = {
     operational: { icon: '✓', title: 'Todos os sistemas operacionais' },
     degraded: { icon: '!', title: 'Alguns serviços apresentam instabilidade' },
+    severe: { icon: '!', title: 'Há serviços com degradação grave' },
     outage: { icon: '✕', title: 'Há serviços fora do ar' },
     pending: { icon: '…', title: 'Aguardando as primeiras verificações' },
     error: { icon: '?', title: 'Não foi possível obter o status do monitor' },
@@ -21,6 +23,7 @@
   var FAVICON_COLORS = {
     operational: '#16a34a',
     degraded: '#e09100',
+    severe: '#ea580c',
     outage: '#dc2626',
     pending: '#98a2b3',
     error: '#98a2b3',
@@ -32,7 +35,7 @@
   var clockOffset = 0; // diferença entre o relógio do servidor e o do navegador
 
   // Quantidade de barras por serviço; o servidor agrupa as checagens para caber nelas.
-  function barSlots() { return narrowScreen.matches ? 30 : 60; }
+  function barSlots() { return narrowScreen.matches ? 60 : 120; }
 
   function $(id) { return document.getElementById(id); }
 
@@ -85,13 +88,13 @@
   function barTooltip(bar) {
     if (bar.checks === 1) {
       return fmtDateTime(bar.from) + '\n' + LABELS[bar.status] +
-        (bar.status === 'outage' ? '' : ' · ' + fmtMs(bar.avgResponseTime));
+        (bar.avgResponseTime != null ? ' · ' + fmtMs(bar.avgResponseTime) : '');
     }
     var lines = [
       fmtDateTime(bar.from) + ' – ' + fmtTime(bar.to),
       LABELS[bar.status] + ' · ' + bar.checks + ' verificações',
     ];
-    var breakdown = ['operational', 'degraded', 'outage']
+    var breakdown = ['operational', 'degraded', 'severe', 'outage']
       .filter(function (s) { return bar.counts[s] > 0; })
       .map(function (s) { return bar.counts[s] + ' ' + LABELS[s].toLowerCase(); });
     if (breakdown.length > 1) lines.push(breakdown.join(' · '));
@@ -149,11 +152,12 @@
   function capitalize(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
 
   function bannerSubtitle(services) {
-    var counts = { operational: 0, degraded: 0, outage: 0, pending: 0 };
+    var counts = { operational: 0, degraded: 0, severe: 0, outage: 0, pending: 0 };
     services.forEach(function (s) { counts[s.status]++; });
     var parts = [];
     if (counts.operational) parts.push(counts.operational + ' operacional' + (counts.operational > 1 ? 'is' : ''));
     if (counts.degraded) parts.push(counts.degraded + ' degradado' + (counts.degraded > 1 ? 's' : ''));
+    if (counts.severe) parts.push(counts.severe + (counts.severe > 1 ? ' degradados graves' : ' degradado grave'));
     if (counts.outage) parts.push(counts.outage + ' fora de serviço');
     if (counts.pending) parts.push(counts.pending + ' aguardando');
     return services.length + ' serviço' + (services.length > 1 ? 's' : '') + ' monitorado' +

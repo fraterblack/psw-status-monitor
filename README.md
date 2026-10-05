@@ -80,18 +80,31 @@ Variáveis de ambiente opcionais:
 | `retries`              | `3`            | Novas tentativas após a primeira falha (total = `retries + 1`).                                                      |
 | `retryDelay`           | `5`            | Espera entre tentativas, em segundos.                                                                                |
 | `expectedStatus`       | `null`         | Código(s) HTTP aceitos, ex.: `[200, 204]`. `null` = qualquer 2xx/3xx.                                                |
-| `slowThresholdMs`      | `null`         | Se a resposta passar desse tempo (ms), o status fica **Degradado**.                                                  |
-| `failuresBeforeOutage` | `1`            | Ciclos consecutivos com todas as tentativas falhando até virar **Fora de Serviço**. Antes disso, fica **Degradado**. |
+| `ignoreStatus`         | `[429]`        | Códigos HTTP que **descartam o ciclo** (ex.: rate limit): sem retry, sem contar como OK ou falha. `[]` desativa.     |
+| `statusWindow`         | `5`            | Quantidade de checagens recentes usadas para calcular o status (ver [Regras de status](#regras-de-status)).          |
+| `degradedFailures`     | `2`            | Falhas dentro da janela para o status ficar **Degradado**.                                                           |
+| `outageFailures`       | `3`            | Falhas dentro da janela para o status ficar **Fora de Serviço**.                                                     |
+| `slowThresholdMs`      | `null`         | Limite (ms) da mediana de resposta: acima dele, **Degradado**. `null` desativa a regra de latência.                  |
+| `severeMultiplier`     | `2`            | Mediana acima de `slowThresholdMs × severeMultiplier` → **Degradado grave**. Deve ser maior que 1.                   |
+
+Validação: `1 ≤ degradedFailures ≤ outageFailures ≤ statusWindow`. Garanta também que `slowThresholdMs × severeMultiplier` fique abaixo de `timeout`; caso contrário a checagem estoura o timeout (vira falha) antes de chegar ao "grave".
 
 ## Regras de status
 
-A cada ciclo o endpoint é chamado; se falhar (erro de rede, timeout ou HTTP inesperado), é chamado novamente até `retries` vezes, esperando `retryDelay` entre as tentativas.
+A cada ciclo o endpoint é chamado; se falhar (erro de rede, timeout ou HTTP inesperado), é chamado novamente até `retries` vezes, esperando `retryDelay` entre as tentativas. O ciclo gera uma **checagem**: **OK** se qualquer tentativa teve sucesso (falhas passageiras resolvidas pelo retry não contam), ou **falha** se todas falharam.
 
-| Status              | Quando                                                                                                                                                                       |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Operacional**     | Sucesso na 1ª tentativa (e abaixo de `slowThresholdMs`, se configurado).                                                                                                     |
-| **Degradado**       | Sucesso só após novas tentativas; **ou** resposta acima de `slowThresholdMs`; **ou** todas as tentativas falharam, mas ainda não por `failuresBeforeOutage` ciclos seguidos. |
-| **Fora de Serviço** | Todas as tentativas falharam por `failuresBeforeOutage` ciclos consecutivos (com o padrão `1`, já no primeiro ciclo).                                                        |
+Se alguma tentativa responder um código de `ignoreStatus` (padrão: `429`), o ciclo é **descartado** na hora: não há novas tentativas e ele não entra no status, nas barras nem no uptime (fica registrado no log como `IGNORADO`). Se um serviço só responder 429, ele continua com o último status conhecido e o "Verificado há" da página mostra há quanto tempo não há checagem válida.
+
+O status do serviço é calculado sobre as últimas `statusWindow` checagens e vale o **pior** entre disponibilidade e latência:
+
+| Status              | Disponibilidade (falhas na janela) | Latência (mediana das checagens OK na janela) |
+| ------------------- | ---------------------------------- | --------------------------------------------- |
+| **Operacional**     | abaixo de `degradedFailures`       | até `slowThresholdMs`                         |
+| **Degradado**       | a partir de `degradedFailures`     | acima de `slowThresholdMs`                    |
+| **Degradado grave** | —                                  | acima de `slowThresholdMs × severeMultiplier` |
+| **Fora de Serviço** | a partir de `outageFailures`       | —                                             |
+
+Com os padrões (janela 5, 2 e 3 falhas), uma falha isolada ou um pico de latência isolado **não alteram o status**. Para um serviço de 60 s: uma queda real fica **Degradado** na 2ª falha seguida e **Fora de Serviço** na 3ª; ao voltar, retorna a **Operacional** na 4ª checagem OK.
 
 O próximo ciclo é agendado `interval` segundos após o **início** do ciclo anterior; se as tentativas demorarem mais que isso, o próximo ciclo começa logo em seguida (nunca há ciclos sobrepostos).
 
@@ -100,12 +113,16 @@ O próximo ciclo é agendado `interval` segundos após o **início** do ciclo an
 Um arquivo por dia (horário local): `logs/status-AAAA-MM-DD.txt`, uma linha por ciclo:
 
 ```
-2026-10-05 09:25:45.390 | ok | OPERACIONAL     | HTTP 200 | 3 ms | tentativas 1/3 | GET https://...
-2026-10-05 09:25:47.598 | flaky | DEGRADADO       | HTTP 200 | 2 ms | tentativas 3/3 | GET https://... | falhas: HTTP 503; HTTP 503
-2026-10-05 09:25:46.500 | refused | FORA DE SERVIÇO | ECONNREFUSED | 1 ms | tentativas 3/3 | GET https://... | falhas: ECONNREFUSED; ECONNREFUSED; ECONNREFUSED
+2026-10-05 09:25:45.390 | api | OPERACIONAL     | HTTP 200 | 3 ms | tentativas 1/3 | GET https://...
+2026-10-05 09:25:47.598 | api | OPERACIONAL     | HTTP 200 | 2 ms | tentativas 2/3 | GET https://... | falhas: HTTP 503
+2026-10-05 09:26:46.500 | api | OPERACIONAL     | ECONNREFUSED | 1 ms | tentativas 3/3 | GET https://... | falhas: ECONNREFUSED; ECONNREFUSED; ECONNREFUSED
+2026-10-05 09:27:46.480 | api | DEGRADADO       | ECONNREFUSED | 1 ms | tentativas 3/3 | GET https://... | falhas: ECONNREFUSED; ECONNREFUSED; ECONNREFUSED
+2026-10-05 09:28:46.112 | api | IGNORADO        | HTTP 429 | 35 ms | tentativas 1/3 | GET https://...
 ```
 
-Campos: data/hora · id · status · resultado (HTTP ou erro) · tempo de resposta da última tentativa · tentativas usadas · método e URL · falhas das tentativas anteriores.
+Campos: data/hora · id · status do serviço · resultado da checagem (HTTP ou erro) · tempo de resposta da última tentativa · tentativas usadas · método e URL · falhas das tentativas.
+
+O status gravado é o do serviço (já considerando a janela), por isso uma checagem com falha pode aparecer como `OPERACIONAL` (3ª linha: falha isolada). Uma checagem falhou quando todas as tentativas falharam (`tentativas 3/3` com 3 falhas).
 
 A saída do console (vista em `pm2 logs`) registra apenas a inicialização e as **mudanças** de status. Para limitar o tamanho dos logs do próprio pm2, use o [`pm2-logrotate`](https://github.com/keymetrics/pm2-logrotate).
 
@@ -116,14 +133,14 @@ A saída do console (vista em `pm2 logs`) registra apenas a inicialização e as
 
 ### Barras de histórico
 
-A página exibe 60 barras por serviço no desktop e 30 no celular. Cada barra agrupa checagens consecutivas, de forma que o conjunto cubra no mínimo `barsMinHours` (ou 1 checagem por barra, se isso já cobrir o período):
+A página exibe 120 barras por serviço no desktop e 60 no celular (definido em `barSlots()`, `public/app.js`). Cada barra agrupa checagens consecutivas, de forma que o conjunto cubra no mínimo `barsMinHours` (ou 1 checagem por barra, se isso já cobrir o período):
 
-| `interval` | Desktop (60 barras)          | Celular (30 barras)          |
-| ---------- | ---------------------------- | ---------------------------- |
-| 60 s       | 4 checagens/barra → 4 h      | 8 checagens/barra → 4 h      |
-| 120 s      | 2 checagens/barra → 4 h      | 4 checagens/barra → 4 h      |
-| 300 s      | 1 checagem/barra → 5 h       | 2 checagens/barra → 5 h      |
+| `interval` | Desktop (120 barras)              | Celular (60 barras)               |
+| ---------- | --------------------------------- | --------------------------------- |
+| 60 s       | 2 checagens/barra (2 min) → 4 h   | 4 checagens/barra (4 min) → 4 h   |
+| 120 s      | 1 checagem/barra (2 min) → 4 h    | 2 checagens/barra (4 min) → 4 h   |
+| 300 s      | 1 checagem/barra (5 min) → 10 h   | 1 checagem/barra (5 min) → 5 h    |
 
-A cor da barra é o **pior** status do grupo (uma falha isolada não é escondida). O tooltip mostra o período, a quantidade de checagens, o detalhamento por status e a resposta média. Abaixo das barras, "1 barra = N min" indica quanto tempo cada barra representa.
+A cor da barra é o **pior status do serviço** no período, ou seja, o status já calculado pela janela: falhas e picos isolados não colorem as barras. O uptime (%) e a média de resposta, por outro lado, usam as checagens reais, então uma falha isolada reduz levemente o uptime. O tooltip mostra o período, a quantidade de checagens, o detalhamento por status e a resposta média. Abaixo das barras, "1 barra = N min" indica quanto tempo cada barra representa.
 
-O histórico exibido fica em memória e, ao iniciar, é reconstruído a partir dos arquivos de log das últimas `historyHours` horas (limitado à retenção dos logs). Assim, reiniciar o processo não zera as barras, o uptime nem o último status. O histórico é associado pelo `id` do endpoint: se o `id` mudar, o histórico anterior deixa de aparecer; linhas de endpoints removidos da configuração são ignoradas. O formato das linhas de log é usado nessa leitura, então mantenha-o se for alterá-lo (`formatLogLine` / `parseLogLine` em `src/monitor.js`).
+O histórico exibido fica em memória e, ao iniciar, é reconstruído a partir dos arquivos de log das últimas `historyHours` horas (limitado à retenção dos logs). Os status são **recalculados** a partir do resultado de cada checagem gravado no log, com as regras e a configuração atuais. Assim, reiniciar o processo não zera as barras, o uptime nem o último status. O histórico é associado pelo `id` do endpoint: se o `id` mudar, o histórico anterior deixa de aparecer; linhas de endpoints removidos da configuração são ignoradas. O formato das linhas de log é usado nessa leitura, então mantenha-o se for alterá-lo (`formatLogLine` / `parseLogLine` em `src/monitor.js`).

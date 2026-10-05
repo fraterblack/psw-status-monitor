@@ -16,9 +16,13 @@
     "timeout": 10,
     "retries": 3,
     "retryDelay": 5,
-    "failuresBeforeOutage": 1,
+    "statusWindow": 5,
+    "degradedFailures": 2,
+    "outageFailures": 3,
     "slowThresholdMs": null,
+    "severeMultiplier": 2,
     "expectedStatus": null,
+    "ignoreStatus": [429],
     "headers": {}
   },
   "endpoints": [
