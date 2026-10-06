@@ -57,6 +57,8 @@ class StatusStore {
         // Uptime e média usam as checagens reais (uma falha isolada reduz o uptime, mas não colore as barras).
         uptime: history.length ? (succeeded.length / history.length) * 100 : null,
         avgResponseTime: averageResponseTime(history),
+        slowThresholdMs: endpoint.slowThresholdMs,
+        severeThresholdMs: endpoint.slowThresholdMs === null ? null : endpoint.slowThresholdMs * endpoint.severeMultiplier,
         checksPerBar,
         bars,
       };

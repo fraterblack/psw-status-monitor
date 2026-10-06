@@ -37,6 +37,7 @@
   var requestSeq = 0;
   var clockOffset = 0; // diferença entre o relógio do servidor e o do navegador
   var selectedHours = loadSelectedHours(); // período das barras escolhido no botão (null = padrão do servidor)
+  var expandedCharts = {}; // serviços com o gráfico de tempo de resposta aberto (sobrevive às atualizações)
 
   // Quantidade de barras por serviço; o servidor agrupa as checagens para caber nelas.
   function barSlots() { return narrowScreen.matches ? 60 : 120; }
@@ -131,6 +132,99 @@
     return html;
   }
 
+  // ---- Gráfico de tempo de resposta (aberto ao clicar em "Última resposta" ou "Média") ----
+  // O SVG usa coordenadas fixas esticadas na largura das barras; textos ficam em HTML para não distorcer.
+  var CHART_W = 1000;
+  var CHART_H = 100;
+
+  function niceCeil(value) {
+    if (value <= 0) return 1;
+    var exp = Math.pow(10, Math.floor(Math.log10(value)));
+    var f = value / exp;
+    return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * exp;
+  }
+
+  // A escala tem ao menos 10% de folga acima do maior valor, então a linha não encosta no topo.
+  function chartY(ms, yMax) {
+    return ((1 - ms / yMax) * CHART_H).toFixed(1);
+  }
+
+  // Média de cada barra, alinhada às barras de cima; barras sem resposta com sucesso interrompem a linha.
+  function chartPaths(svc, slots, yMax) {
+    var offset = slots - svc.bars.length;
+    var line = '';
+    var area = '';
+    var segment = [];
+    function flush() {
+      if (!segment.length) return;
+      var points = segment.join('L');
+      line += 'M' + points + (segment.length === 1 ? 'l0.1,0' : '');
+      area += 'M' + segment[0].split(',')[0] + ',' + CHART_H + 'L' + points +
+        'L' + segment[segment.length - 1].split(',')[0] + ',' + CHART_H + 'Z';
+      segment = [];
+    }
+    svc.bars.forEach(function (bar, i) {
+      if (bar.avgResponseTime == null) return flush();
+      segment.push(((offset + i + 0.5) / slots * CHART_W).toFixed(1) + ',' + chartY(bar.avgResponseTime, yMax));
+    });
+    flush();
+    return { line: line, area: area };
+  }
+
+  function renderChart(svc, data) {
+    var values = svc.bars.map(function (b) { return b.avgResponseTime; }).filter(function (v) { return v != null; });
+    if (!values.length) {
+      return '<div class="chart"><p class="chart__empty">Sem respostas com sucesso no período.</p></div>';
+    }
+
+    // Escala pelos dados; os limites entram na escala só quando estão próximos (senão achatariam a linha).
+    var dataMax = Math.max.apply(null, values);
+    var limits = [
+      { ms: svc.slowThresholdMs, cls: 'degraded', label: 'limite de lentidão' },
+      { ms: svc.severeThresholdMs, cls: 'severe', label: 'grave' },
+    ].filter(function (l) { return l.ms != null; });
+    var scaleMax = dataMax;
+    limits.forEach(function (l) { if (l.ms <= dataMax * 1.5) scaleMax = Math.max(scaleMax, l.ms); });
+    var yMax = niceCeil(scaleMax * 1.1);
+
+    var paths = chartPaths(svc, data.barSlots, yMax);
+    var grid = [0, 0.5, 1].map(function (f) {
+      var y = chartY(yMax * f, yMax);
+      return '<line class="chart__grid" x1="0" x2="' + CHART_W + '" y1="' + y + '" y2="' + y + '" vector-effect="non-scaling-stroke"/>';
+    }).join('');
+    var limitLines = limits.filter(function (l) { return l.ms <= yMax; }).map(function (l) {
+      var y = chartY(l.ms, yMax);
+      return '<line class="chart__limit chart__limit--' + l.cls + '" x1="0" x2="' + CHART_W + '" y1="' + y + '" y2="' + y +
+        '" vector-effect="non-scaling-stroke"/>';
+    }).join('');
+    var legend = ['<span class="chart__key chart__key--avg">Resposta média por barra</span>'].concat(limits.map(function (l) {
+      return '<span class="chart__key chart__key--' + l.cls + '">' + capitalize(l.label) + ' ' + fmtMs(l.ms) +
+        (l.ms > yMax ? ' (fora da escala)' : '') + '</span>';
+    })).join('');
+
+    return (
+      '<div class="chart">' +
+      '<div class="chart__plot" data-service="' + esc(svc.id) + '">' +
+      '<svg viewBox="0 0 ' + CHART_W + ' ' + CHART_H + '" preserveAspectRatio="none" aria-hidden="true">' +
+      grid + limitLines +
+      '<path class="chart__area" d="' + paths.area + '"/>' +
+      '<path class="chart__line" d="' + paths.line + '" vector-effect="non-scaling-stroke"/>' +
+      '<line class="chart__guide" x1="0" x2="0" y1="0" y2="' + CHART_H + '" visibility="hidden" vector-effect="non-scaling-stroke"/>' +
+      '</svg>' +
+      '<div class="chart__y"><span>' + fmtMs(yMax) + '</span><span>' + fmtMs(Math.round(yMax / 2)) + '</span><span>0</span></div>' +
+      '</div>' +
+      '<div class="chart__legend">' + legend + '</div>' +
+      '</div>'
+    );
+  }
+
+  function chartToggle(svc, kind, label, value) {
+    var open = Boolean(expandedCharts[svc.id]);
+    return '<button type="button" class="meta-toggle" data-chart-toggle="' + esc(svc.id) + '" data-kind="' + kind + '"' +
+      ' aria-expanded="' + open + '" title="' + (open ? 'Ocultar' : 'Mostrar') + ' gráfico de tempo de resposta">' +
+      label + ' <b>' + value + '</b></button>';
+  }
+
   function renderService(svc, data) {
     var historyHours = data.historyHours;
     var oldest = svc.bars.length ? svc.bars[0].from : null;
@@ -139,8 +233,8 @@
       (svc.checksPerBar > 1 ? ' · 1 barra = ' + fmtDuration(svc.checksPerBar * svc.interval) : '');
 
     var meta = svc.lastCheck
-      ? '<span>Última resposta <b>' + fmtMs(svc.responseTime) + '</b></span>' +
-      '<span>Média ' + historyHours + 'h <b>' + fmtMs(svc.avgResponseTime) + '</b></span>' +
+      ? chartToggle(svc, 'last', 'Última resposta', fmtMs(svc.responseTime)) +
+      chartToggle(svc, 'avg', 'Média ' + historyHours + 'h', fmtMs(svc.avgResponseTime)) +
       '<span>Verificado ' + since(svc.lastCheck) + '</span>' +
       '<span>' + frequency + '</span>'
       : '<span>Aguardando a primeira verificação (a cada ' + svc.interval + ' s)</span>';
@@ -160,6 +254,7 @@
       '<span>agora</span>' +
       '</div>' +
       '<div class="service__meta">' + meta + '</div>' +
+      (svc.lastCheck && expandedCharts[svc.id] ? renderChart(svc, data) : '') +
       (showMessage
         ? '<div class="service__message pill--' + svc.status + '">' + esc(capitalize(svc.message)) + '</div>'
         : '') +
@@ -278,25 +373,75 @@
     refresh();
   });
 
-  // Tooltip das barras
+  // Abre/fecha o gráfico só do serviço clicado; o estado sobrevive às atualizações automáticas.
+  $('services').addEventListener('click', function (event) {
+    var toggle = event.target.closest('[data-chart-toggle]');
+    if (!toggle || !lastData) return;
+    var id = toggle.getAttribute('data-chart-toggle');
+    var kind = toggle.getAttribute('data-kind');
+    if (expandedCharts[id]) delete expandedCharts[id];
+    else expandedCharts[id] = true;
+    hideTooltip();
+    render(lastData);
+    // A lista é recriada: devolve o foco ao botão clicado (navegação por teclado).
+    var selector = '[data-chart-toggle="' + id.replace(/["\\]/g, '\\$&') + '"][data-kind="' + kind + '"]';
+    var again = $('services').querySelector(selector);
+    if (again) again.focus();
+  });
+
+  // Tooltip das barras e do gráfico
   var tooltip = $('tooltip');
 
-  function hideTooltip() { tooltip.hidden = true; }
+  function hideGuide() {
+    var guide = $('services').querySelector('.chart__guide[visibility="visible"]');
+    if (guide) guide.setAttribute('visibility', 'hidden');
+  }
 
-  $('services').addEventListener('mouseover', function (event) {
-    var bar = event.target.closest('.bar');
+  function hideTooltip() {
+    tooltip.hidden = true;
+    hideGuide();
+  }
+
+  function showTooltip(text, anchorX, anchorTop) {
+    tooltip.textContent = text;
+    tooltip.hidden = false;
+    var width = tooltip.offsetWidth;
+    var left = Math.max(8, Math.min(anchorX - width / 2, document.documentElement.clientWidth - width - 8));
+    tooltip.style.left = left + window.scrollX + 'px';
+    tooltip.style.top = anchorTop + window.scrollY - tooltip.offsetHeight - 8 + 'px';
+  }
+
+  // No gráfico, a posição do mouse corresponde à barra de mesma posição horizontal.
+  function showChartTooltip(plot, event) {
+    var id = plot.getAttribute('data-service');
+    var svc = lastData && lastData.services.filter(function (s) { return s.id === id; })[0];
+    if (!svc) return hideTooltip();
+    var slots = lastData.barSlots;
+    var rect = plot.getBoundingClientRect();
+    var slot = Math.min(slots - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * slots)));
+    var bar = svc.bars[slot - (slots - svc.bars.length)];
     if (!bar) return hideTooltip();
 
-    tooltip.textContent = bar.getAttribute('data-tip');
-    tooltip.hidden = false;
+    var guide = plot.querySelector('.chart__guide');
+    var x = ((slot + 0.5) / slots * CHART_W).toFixed(1);
+    guide.setAttribute('x1', x);
+    guide.setAttribute('x2', x);
+    guide.setAttribute('visibility', 'visible');
+    showTooltip(barTooltip(bar), rect.left + (slot + 0.5) / slots * rect.width, rect.top);
+  }
 
+  function onPointer(event) {
+    var plot = event.target.closest('.chart__plot');
+    if (plot) return showChartTooltip(plot, event);
+    hideGuide();
+    var bar = event.target.closest('.bar');
+    if (!bar) return hideTooltip();
     var rect = bar.getBoundingClientRect();
-    var width = tooltip.offsetWidth;
-    var left = rect.left + rect.width / 2 - width / 2;
-    left = Math.max(8, Math.min(left, document.documentElement.clientWidth - width - 8));
-    tooltip.style.left = left + window.scrollX + 'px';
-    tooltip.style.top = rect.top + window.scrollY - tooltip.offsetHeight - 8 + 'px';
-  });
+    showTooltip(bar.getAttribute('data-tip'), rect.left + rect.width / 2, rect.top);
+  }
+
+  $('services').addEventListener('mouseover', onPointer);
+  $('services').addEventListener('mousemove', onPointer);
   $('services').addEventListener('mouseleave', hideTooltip);
 
   refresh();

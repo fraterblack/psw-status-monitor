@@ -128,7 +128,7 @@ A saída do console (vista em `pm2 logs`) registra apenas a inicialização e as
 
 ## Página de status e API
 
-- `GET /` — página de status (atualiza a cada 10 s): banner geral, status de cada serviço, barras com as últimas verificações, uptime e tempo médio de resposta.
+- `GET /` — página de status (atualiza a cada 10 s): banner geral, status de cada serviço, barras com as últimas verificações, uptime e tempo médio de resposta. Clicar em "Última resposta" ou "Média" abre, só para aquele serviço, um gráfico do tempo de resposta médio de cada barra (acompanha o período 4h/24h), com as linhas de `slowThresholdMs` e do "grave" quando estão na escala do gráfico.
 - `GET /api/status?bars=60&hours=4` — os mesmos dados em JSON; `bars` (10 a 120, padrão 60) define em quantas barras o histórico é agrupado e `hours` o período coberto por elas (padrão `barsMinHours`, máximo `historyHours`).
 
 ### Barras de histórico
