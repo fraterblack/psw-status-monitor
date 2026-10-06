@@ -5,7 +5,7 @@ class StatusStore {
   constructor(endpoints, { historyHours, barsMinHours }) {
     this.historyMs = historyHours * 60 * 60 * 1000;
     this.historyHours = historyHours;
-    this.barsMinSeconds = barsMinHours * 60 * 60;
+    this.barsMinHours = barsMinHours;
     this.services = new Map(endpoints.map((ep) => [ep.id, { endpoint: ep, current: null, history: [] }]));
   }
 
@@ -31,11 +31,18 @@ class StatusStore {
     service.current = current;
   }
 
-  /** @param {number} barSlots quantidade de barras que a página vai exibir por serviço */
-  snapshot(barSlots) {
+  /**
+   * @param {number} barSlots quantidade de barras que a página vai exibir por serviço
+   * @param {number} [requestedHours] período coberto pelas barras (inválido = barsMinHours; máximo historyHours)
+   */
+  snapshot(barSlots, requestedHours) {
+    const barsHours = Number.isFinite(requestedHours) && requestedHours > 0
+      ? Math.min(requestedHours, this.historyHours)
+      : this.barsMinHours;
+
     const services = [...this.services.values()].map(({ endpoint, current, history }) => {
       const succeeded = history.filter((h) => !h.f);
-      const { checksPerBar, bars } = buildBars(history, endpoint.interval, barSlots, this.barsMinSeconds);
+      const { checksPerBar, bars } = buildBars(history, endpoint.interval, barSlots, barsHours * 60 * 60);
       return {
         id: endpoint.id,
         name: endpoint.name,
@@ -58,6 +65,8 @@ class StatusStore {
     return {
       generatedAt: Date.now(),
       historyHours: this.historyHours,
+      barsMinHours: this.barsMinHours,
+      barsHours,
       barSlots,
       overall: services.map((s) => s.status).reduce(worstStatus, STATUS.PENDING),
       services,

@@ -85,9 +85,12 @@ function handleRequest(req, res, { store, title }) {
 
   if (url.pathname === '/api/status') {
     // ?bars=N define quantas barras de histórico a página exibe (o servidor agrupa as checagens)
+    // ?hours=H define o período coberto pelas barras (padrão barsMinHours, limitado a historyHours)
     const requested = parseInt(url.searchParams.get('bars'), 10) || DEFAULT_BAR_SLOTS;
     const barSlots = Math.min(MAX_BAR_SLOTS, Math.max(MIN_BAR_SLOTS, requested));
-    return send(res, 200, JSON.stringify({ title, ...store.snapshot(barSlots) }), 'application/json; charset=utf-8');
+    const hours = parseFloat(url.searchParams.get('hours'));
+    const body = JSON.stringify({ title, ...store.snapshot(barSlots, hours) });
+    return send(res, 200, body, 'application/json; charset=utf-8');
   }
 
   serveStatic(url.pathname, res);

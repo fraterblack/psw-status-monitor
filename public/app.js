@@ -29,13 +29,31 @@
     error: '#98a2b3',
   };
 
+  var HOURS_STORAGE_KEY = 'psw-status-hours';
+
   var narrowScreen = window.matchMedia('(max-width: 640px)');
   var lastData = null;
   var refreshTimer = null;
+  var requestSeq = 0;
   var clockOffset = 0; // diferença entre o relógio do servidor e o do navegador
+  var selectedHours = loadSelectedHours(); // período das barras escolhido no botão (null = padrão do servidor)
 
   // Quantidade de barras por serviço; o servidor agrupa as checagens para caber nelas.
   function barSlots() { return narrowScreen.matches ? 60 : 120; }
+
+  // A escolha do período é só uma preferência deste navegador: sem armazenamento, vale apenas nesta visita.
+  function loadSelectedHours() {
+    try {
+      var hours = Number(window.localStorage.getItem(HOURS_STORAGE_KEY));
+      return hours > 0 ? hours : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveSelectedHours(hours) {
+    try { window.localStorage.setItem(HOURS_STORAGE_KEY, String(hours)); } catch (e) { /* ignora */ }
+  }
 
   function $(id) { return document.getElementById(id); }
 
@@ -54,7 +72,7 @@
     var m = Math.floor(s / 60);
     if (m < 60) return 'há ' + m + ' min';
     var h = Math.round(m / 60);
-    if (h < 24) return 'há ' + h + ' h';
+    if (h < 48) return 'há ' + h + ' h';
     return 'há ' + Math.round(h / 24) + ' d';
   }
 
@@ -122,29 +140,29 @@
 
     var meta = svc.lastCheck
       ? '<span>Última resposta <b>' + fmtMs(svc.responseTime) + '</b></span>' +
-        '<span>Média ' + historyHours + 'h <b>' + fmtMs(svc.avgResponseTime) + '</b></span>' +
-        '<span>Verificado ' + since(svc.lastCheck) + '</span>' +
-        '<span>' + frequency + '</span>'
+      '<span>Média ' + historyHours + 'h <b>' + fmtMs(svc.avgResponseTime) + '</b></span>' +
+      '<span>Verificado ' + since(svc.lastCheck) + '</span>' +
+      '<span>' + frequency + '</span>'
       : '<span>Aguardando a primeira verificação (a cada ' + svc.interval + ' s)</span>';
 
     return (
       '<li class="service">' +
-        '<div class="service__head">' +
-          '<span class="service__name">' + esc(svc.name) + '</span>' +
-          '<span class="pill pill--' + svc.status + '"><span class="dot"></span>' + LABELS[svc.status] + '</span>' +
-        '</div>' +
-        '<div class="bars">' + renderBars(svc.bars, data.barSlots) + '</div>' +
-        '<div class="bars__axis">' +
-          '<span>' + (oldest ? since(oldest) : '') + '</span>' +
-          '<span class="axis-line"></span>' +
-          '<span class="uptime">' + fmtPct(svc.uptime) + ' uptime (' + historyHours + 'h)</span>' +
-          '<span class="axis-line"></span>' +
-          '<span>agora</span>' +
-        '</div>' +
-        '<div class="service__meta">' + meta + '</div>' +
-        (showMessage
-          ? '<div class="service__message pill--' + svc.status + '">' + esc(capitalize(svc.message)) + '</div>'
-          : '') +
+      '<div class="service__head">' +
+      '<span class="service__name">' + esc(svc.name) + '</span>' +
+      '<span class="pill pill--' + svc.status + '"><span class="dot"></span>' + LABELS[svc.status] + '</span>' +
+      '</div>' +
+      '<div class="bars">' + renderBars(svc.bars, data.barSlots) + '</div>' +
+      '<div class="bars__axis">' +
+      '<span>' + (oldest ? since(oldest) : '') + '</span>' +
+      '<span class="axis-line"></span>' +
+      '<span class="uptime">' + fmtPct(svc.uptime) + ' uptime (' + historyHours + 'h)</span>' +
+      '<span class="axis-line"></span>' +
+      '<span>agora</span>' +
+      '</div>' +
+      '<div class="service__meta">' + meta + '</div>' +
+      (showMessage
+        ? '<div class="service__message pill--' + svc.status + '">' + esc(capitalize(svc.message)) + '</div>'
+        : '') +
       '</li>'
     );
   }
@@ -155,7 +173,7 @@
     var counts = { operational: 0, degraded: 0, severe: 0, outage: 0, pending: 0 };
     services.forEach(function (s) { counts[s.status]++; });
     var parts = [];
-    if (counts.operational) parts.push(counts.operational + ' operacional' + (counts.operational > 1 ? 'is' : ''));
+    if (counts.operational) parts.push(counts.operational + ' operaciona' + (counts.operational > 1 ? 'is' : 'l'));
     if (counts.degraded) parts.push(counts.degraded + ' degradado' + (counts.degraded > 1 ? 's' : ''));
     if (counts.severe) parts.push(counts.severe + (counts.severe > 1 ? ' degradados graves' : ' degradado grave'));
     if (counts.outage) parts.push(counts.outage + ' fora de serviço');
@@ -178,11 +196,31 @@
     $('favicon').href = 'data:image/svg+xml,' + encodeURIComponent(svg);
   }
 
+  // Botão "4h | 24h": período padrão das barras (barsMinHours) ou o histórico completo (historyHours).
+  function renderRange(data) {
+    var range = $('range');
+    var options = [data.barsMinHours, data.historyHours];
+    if (options[0] === options[1]) {
+      range.hidden = true;
+      return;
+    }
+    range.innerHTML =
+      '<span class="range__label">Histórico</span>' +
+      '<div class="range__options" role="group" aria-label="Período do histórico">' +
+      options.map(function (hours) {
+        return '<button type="button" data-hours="' + hours + '" aria-pressed="' + (hours === data.barsHours) + '">' +
+          hours + 'h</button>';
+      }).join('') +
+      '</div>';
+    range.hidden = false;
+  }
+
   function render(data) {
     document.title = data.title;
     $('title').textContent = data.title;
     $('updated').innerHTML = since(data.generatedAt);
     setBanner(data.overall, esc(bannerSubtitle(data.services)));
+    renderRange(data);
 
     $('services').innerHTML = data.services.length
       ? data.services.map(function (svc) { return renderService(svc, data); }).join('')
@@ -191,23 +229,29 @@
 
   function refresh() {
     clearTimeout(refreshTimer);
-    fetch('api/status?bars=' + barSlots(), { cache: 'no-store' })
+    // Só a busca mais recente é exibida (ex.: a resposta antiga não desfaz uma troca de período).
+    var seq = ++requestSeq;
+    var query = 'bars=' + barSlots() + (selectedHours ? '&hours=' + selectedHours : '');
+    fetch('api/status?' + query, { cache: 'no-store' })
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
       })
       .then(function (data) {
+        if (seq !== requestSeq) return;
         clockOffset = data.generatedAt - Date.now();
         lastData = data;
         hideTooltip();
         render(data);
       })
       .catch(function (err) {
+        if (seq !== requestSeq) return;
         var subtitle = esc(err.message);
         if (lastData) subtitle += ' · exibindo dados de ' + since(lastData.generatedAt);
         setBanner('error', subtitle);
       })
       .then(function () {
+        if (seq !== requestSeq) return; // a busca mais recente agenda a próxima
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(refresh, REFRESH_MS);
       });
@@ -222,6 +266,17 @@
 
   // A quantidade de barras depende da largura da tela: busca de novo ao mudar.
   narrowScreen.addEventListener('change', refresh);
+
+  $('range').addEventListener('click', function (event) {
+    var button = event.target.closest('button[data-hours]');
+    if (!button || button.getAttribute('aria-pressed') === 'true') return;
+    selectedHours = Number(button.getAttribute('data-hours'));
+    saveSelectedHours(selectedHours);
+    $('range').querySelectorAll('button').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b === button));
+    });
+    refresh();
+  });
 
   // Tooltip das barras
   var tooltip = $('tooltip');

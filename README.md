@@ -129,7 +129,7 @@ A saída do console (vista em `pm2 logs`) registra apenas a inicialização e as
 ## Página de status e API
 
 - `GET /` — página de status (atualiza a cada 10 s): banner geral, status de cada serviço, barras com as últimas verificações, uptime e tempo médio de resposta.
-- `GET /api/status?bars=60` — os mesmos dados em JSON; `bars` (10 a 120, padrão 60) define em quantas barras o histórico é agrupado.
+- `GET /api/status?bars=60&hours=4` — os mesmos dados em JSON; `bars` (10 a 120, padrão 60) define em quantas barras o histórico é agrupado e `hours` o período coberto por elas (padrão `barsMinHours`, máximo `historyHours`).
 
 ### Barras de histórico
 
@@ -140,6 +140,8 @@ A página exibe 120 barras por serviço no desktop e 60 no celular (definido em 
 | 60 s       | 2 checagens/barra (2 min) → 4 h   | 4 checagens/barra (4 min) → 4 h   |
 | 120 s      | 1 checagem/barra (2 min) → 4 h    | 2 checagens/barra (4 min) → 4 h   |
 | 300 s      | 1 checagem/barra (5 min) → 10 h   | 1 checagem/barra (5 min) → 5 h    |
+
+O botão **Histórico** acima da lista alterna o período das barras entre `barsMinHours` (padrão 4 h) e `historyHours` (padrão 24 h), para todos os serviços. A escolha fica salva no navegador de cada pessoa. Na visão de 24 h, com intervalo de 60 s, cada barra vale 12 min no desktop e 24 min no celular. Se os dois valores forem iguais, o botão não aparece.
 
 A cor da barra é o **pior status do serviço** no período, ou seja, o status já calculado pela janela: falhas e picos isolados não colorem as barras. O uptime (%) e a média de resposta, por outro lado, usam as checagens reais, então uma falha isolada reduz levemente o uptime. O tooltip mostra o período, a quantidade de checagens, o detalhamento por status e a resposta média. Abaixo das barras, "1 barra = N min" indica quanto tempo cada barra representa.
 

@@ -127,6 +127,43 @@ body {
 }
 .banner--error .banner__icon, .banner--pending .banner__icon { color: var(--pending-text); }
 
+/* Botão de período do histórico */
+.range {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.range[hidden] { display: none; }
+.range__options {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--pending-soft);
+}
+.range__options button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.range__options button:hover { color: var(--text); }
+.range__options button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
+}
+.range__options button:focus-visible { outline: 2px solid var(--operational); outline-offset: 1px; }
+
 /* Lista de serviços */
 .card {
   background: var(--surface);
